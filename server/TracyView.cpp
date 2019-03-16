@@ -911,7 +911,7 @@ bool View::DrawImpl()
     }
 
     const auto dockspaceId = ImGui::GetID( "tracyDockspace" );
-    ImGui::DockSpace( dockspaceId, ImVec2( 0, 0 ) /*, ImGuiDockNodeFlags_NoDockingInCentralNode*/ );
+    ImGui::DockSpace( dockspaceId, ImVec2( 0, 0 ), ImGuiDockNodeFlags_NoDockingInCentralNode );
     ImGui::SetNextWindowDockID( dockspaceId );
     ImGui::Begin( "Work area" );
 
