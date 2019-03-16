@@ -13422,11 +13422,13 @@ void ImGui::BeginDocked(ImGuiWindow* window, bool* p_open)
     }
 
     // Undock if the ImGuiDockNodeFlags_NoDockingInCentralNode got set
+    /*
     if (node->IsCentralNode && (node->Flags & ImGuiDockNodeFlags_NoDockingInCentralNode))
     {
         DockContextProcessUndockWindow(ctx, window);
         return;
     }
+    */
 
     // Undock if our dockspace node disappeared
     // Note how we are testing for LastFrameAlive and NOT LastFrameActive. A DockSpace node can be maintained alive while being inactive with ImGuiDockNodeFlags_KeepAliveOnly.
