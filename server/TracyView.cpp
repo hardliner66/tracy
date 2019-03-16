@@ -909,8 +909,16 @@ bool View::DrawImpl()
         ImGui::SameLine();
         TextDisabledUnformatted( m_notificationText.c_str() );
     }
+
+    const auto dockspaceId = ImGui::GetID( "tracyDockspace" );
+    ImGui::DockSpace( dockspaceId, ImVec2( 0, 0 ) /*, ImGuiDockNodeFlags_NoDockingInCentralNode*/ );
+    ImGui::SetNextWindowDockID( dockspaceId );
+    ImGui::Begin( "Work area" );
+
     DrawFrames();
     DrawZones();
+
+    ImGui::End();
     ImGui::End();
 
     m_zoneHighlight = nullptr;
