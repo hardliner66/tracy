@@ -913,6 +913,8 @@ bool View::DrawImpl()
         TextDisabledUnformatted( m_notificationText.c_str() );
     }
 
+    DrawFrames();
+
     const auto dockspaceId = ImGui::GetID( "tracyDockspace" );
     ImGui::DockSpace( dockspaceId, ImVec2( 0, 0 ), ImGuiDockNodeFlags_NoDockingInCentralNode );
     if( ImGuiDockNode* node = ImGui::DockBuilderGetCentralNode( dockspaceId ) )
@@ -936,7 +938,6 @@ bool View::DrawImpl()
 #endif
     }
 
-    DrawFrames();
     DrawZones();
 
     ImGui::End();
