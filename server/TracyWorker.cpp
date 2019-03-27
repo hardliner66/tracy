@@ -356,7 +356,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
 
     if( fileVer >= FileVersion( 0, 3, 204 ) )
     {
-        f.Read( &m_data.m_crashEvent, sizeof( m_data.m_crashEvent ) );
+        f.Read( &m_data.crashEvent, sizeof( m_data.crashEvent ) );
     }
 
     if( fileVer >= FileVersion( 0, 3, 202 ) )
@@ -707,7 +707,7 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
             }
             else
             {
-                f.Skip( tsz * ( type == LockType::Lockable ? sizeof( LockEvent ) : sizeof( LockEventShared ) ) );
+                f.Skip( tsz * ( type == LockType::Lockable ? 24 : 40 ) );
             }
         }
     }
@@ -761,6 +761,12 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
     }
 
     s_loadProgress.progress.store( LoadProgress::Zones, std::memory_order_relaxed );
+    if( fileVer >= FileVersion( 0, 4, 7 ) )
+    {
+        f.Read( sz );
+        s_loadProgress.subTotal.store( sz, std::memory_order_relaxed );
+        s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+    }
     f.Read( sz );
     m_data.threads.reserve_exact( sz, m_slab );
     for( uint64_t i=0; i<sz; i++ )
@@ -772,8 +778,11 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
         f.Read( td->count );
         uint64_t tsz;
         f.Read( tsz );
-        s_loadProgress.subTotal.store( td->count, std::memory_order_relaxed );
-        s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+        if( fileVer < FileVersion( 0, 4, 7 ) )
+        {
+            s_loadProgress.subTotal.store( td->count, std::memory_order_relaxed );
+            s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+        }
         if( tsz != 0 )
         {
             if( fileVer <= FileVersion( 0, 4, 1 ) )
@@ -808,6 +817,12 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
     }
 
     s_loadProgress.progress.store( LoadProgress::GpuZones, std::memory_order_relaxed );
+    if( fileVer >= FileVersion( 0, 4, 7 ) )
+    {
+        f.Read( sz );
+        s_loadProgress.subTotal.store( sz, std::memory_order_relaxed );
+        s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+    }
     f.Read( sz );
     m_data.gpuData.reserve_exact( sz, m_slab );
     for( uint64_t i=0; i<sz; i++ )
@@ -816,8 +831,11 @@ Worker::Worker( FileRead& f, EventType::Type eventMask )
         f.Read( ctx->thread );
         f.Read( ctx->accuracyBits );
         f.Read( ctx->count );
-        s_loadProgress.subTotal.store( ctx->count, std::memory_order_relaxed );
-        s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+        if( fileVer < FileVersion( 0, 4, 7 ) )
+        {
+            s_loadProgress.subTotal.store( ctx->count, std::memory_order_relaxed );
+            s_loadProgress.subProgress.store( 0, std::memory_order_relaxed );
+        }
         int64_t refTime = 0;
         int64_t refGpuTime = 0;
         if( fileVer <= FileVersion( 0, 3, 1 ) )
@@ -1977,12 +1995,23 @@ void Worker::NewZone( ZoneEvent* zone, uint64_t thread )
         auto back = td->stack.back();
         if( back->child < 0 )
         {
-            back->child = int32_t( m_data.m_zoneChildren.size() );
-            m_data.m_zoneChildren.push_back( Vector<ZoneEvent*>( zone ) );
+            back->child = int32_t( m_data.zoneChildren.size() );
+            if( m_data.zoneVectorCache.empty() )
+            {
+                m_data.zoneChildren.push_back( Vector<ZoneEvent*>( zone ) );
+            }
+            else
+            {
+                Vector<ZoneEvent*> vze = std::move( m_data.zoneVectorCache.back_and_pop() );
+                assert( !vze.empty() );
+                vze.clear();
+                vze.push_back_non_empty( zone );
+                m_data.zoneChildren.push_back( std::move( vze ) );
+            }
         }
         else
         {
-            m_data.m_zoneChildren[back->child].push_back( zone );
+            m_data.zoneChildren[back->child].push_back( zone );
         }
         td->stack.push_back_non_empty( zone );
     }
@@ -2013,14 +2042,14 @@ void Worker::InsertLockEvent( LockMap& lockmap, LockEvent* lev, uint64_t thread 
         timeline.push_back( { lev } );
         UpdateLockCount( lockmap, timeline.size() - 1 );
     }
-    else if( timeline.back().ptr->time < lt )
+    else if( timeline.back().ptr->time <= lt )
     {
         timeline.push_back_non_empty( { lev } );
         UpdateLockCount( lockmap, timeline.size() - 1 );
     }
     else
     {
-        auto it = std::lower_bound( timeline.begin(), timeline.end(), lt, [] ( const auto& lhs, const auto& rhs ) { return lhs.ptr->time < rhs; } );
+        auto it = std::upper_bound( timeline.begin(), timeline.end(), lt, [] ( const auto& lhs, const auto& rhs ) { return lhs < rhs.ptr->time; } );
         it = timeline.insert( it, { lev } );
         UpdateLockCount( lockmap, std::distance( timeline.begin(), it ) );
     }
@@ -2613,6 +2642,20 @@ void Worker::ProcessZoneEnd( const QueueZoneEnd& ev )
 
     m_data.lastTime = std::max( m_data.lastTime, zone->end );
 
+    if( zone->child >= 0 )
+    {
+        auto& childVec = m_data.zoneChildren[zone->child];
+        const auto sz = childVec.size();
+        if( sz <= 8 * 1024 )
+        {
+            Vector<ZoneEvent*> fitVec;
+            fitVec.reserve_exact( sz, m_slab );
+            memcpy( fitVec.data(), childVec.data(), sz * sizeof( ZoneEvent* ) );
+            fitVec.swap( childVec );
+            m_data.zoneVectorCache.push_back( std::move( fitVec ) );
+        }
+    }
+
 #ifndef TRACY_NO_STATISTICS
     auto timeSpan = zone->end - zone->start;
     if( timeSpan > 0 )
@@ -2700,7 +2743,7 @@ void Worker::ProcessFrameMark( const QueueFrameMark& ev )
 
     assert( fd->continuous == 1 );
     const auto time = TscTime( ev.time );
-    assert( fd->frames.empty() || fd->frames.back().start < time );
+    assert( fd->frames.empty() || fd->frames.back().start <= time );
     fd->frames.push_back( FrameEvent{ time, -1 } );
     m_data.lastTime = std::max( m_data.lastTime, time );
 }
@@ -2718,7 +2761,7 @@ void Worker::ProcessFrameMarkStart( const QueueFrameMark& ev )
 
     assert( fd->continuous == 0 );
     const auto time = TscTime( ev.time );
-    assert( fd->frames.empty() || ( fd->frames.back().end < time && fd->frames.back().end != -1 ) );
+    assert( fd->frames.empty() || ( fd->frames.back().end <= time && fd->frames.back().end != -1 ) );
     fd->frames.push_back( FrameEvent{ time, -1 } );
     m_data.lastTime = std::max( m_data.lastTime, time );
 }
@@ -3069,10 +3112,10 @@ void Worker::ProcessGpuZoneBeginImpl( GpuEvent* zone, const QueueGpuZoneBegin& e
         auto back = ctx->stack.back();
         if( back->child < 0 )
         {
-            back->child = int32_t( m_data.m_gpuChildren.size() );
-            m_data.m_gpuChildren.push_back( Vector<GpuEvent*>() );
+            back->child = int32_t( m_data.gpuChildren.size() );
+            m_data.gpuChildren.push_back( Vector<GpuEvent*>() );
         }
-        timeline = &m_data.m_gpuChildren[back->child];
+        timeline = &m_data.gpuChildren[back->child];
     }
 
     timeline->push_back( zone );
@@ -3276,7 +3319,7 @@ void Worker::ProcessCallstack( const QueueCallstack& ev )
         next.gpu->callstack = m_pendingCallstackId;
         break;
     case NextCallstackType::Crash:
-        m_data.m_crashEvent.callstack = m_pendingCallstackId;
+        m_data.crashEvent.callstack = m_pendingCallstackId;
         break;
     default:
         assert( false );
@@ -3302,7 +3345,7 @@ void Worker::ProcessCallstackAlloc( const QueueCallstackAlloc& ev )
         next.gpu->callstack = m_pendingCallstackId;
         break;
     case NextCallstackType::Crash:
-        m_data.m_crashEvent.callstack = m_pendingCallstackId;
+        m_data.crashEvent.callstack = m_pendingCallstackId;
         break;
     default:
         assert( false );
@@ -3370,10 +3413,10 @@ void Worker::ProcessCrashReport( const QueueCrashReport& ev )
     auto& next = m_nextCallstack[ev.thread];
     next.type = NextCallstackType::Crash;
 
-    m_data.m_crashEvent.thread = ev.thread;
-    m_data.m_crashEvent.time = TscTime( ev.time );
-    m_data.m_crashEvent.message = ev.text;
-    m_data.m_crashEvent.callstack = 0;
+    m_data.crashEvent.thread = ev.thread;
+    m_data.crashEvent.time = TscTime( ev.time );
+    m_data.crashEvent.message = ev.text;
+    m_data.crashEvent.callstack = 0;
 }
 
 void Worker::ProcessSysTime( const QueueSysTime& ev )
@@ -3542,14 +3585,14 @@ void Worker::ReadTimeline( FileRead& f, ZoneEvent* zone, uint16_t thread, int64_
     }
     else
     {
-        zone->child = m_data.m_zoneChildren.size();
+        zone->child = m_data.zoneChildren.size();
         // Put placeholder to have proper size of zone children in nested calls
-        m_data.m_zoneChildren.push_back( Vector<ZoneEvent*>() );
+        m_data.zoneChildren.push_back( Vector<ZoneEvent*>() );
         // Real data buffer. Can't use placeholder, as the vector can be reallocated
         // and the buffer address will change, but the reference won't.
         Vector<ZoneEvent*> tmp;
         ReadTimeline( f, tmp, thread, sz, refTime );
-        m_data.m_zoneChildren[zone->child] = std::move( tmp );
+        m_data.zoneChildren[zone->child] = std::move( tmp );
     }
 }
 
@@ -3563,11 +3606,11 @@ void Worker::ReadTimelinePre042( FileRead& f, ZoneEvent* zone, uint16_t thread, 
     }
     else
     {
-        zone->child = m_data.m_zoneChildren.size();
-        m_data.m_zoneChildren.push_back( Vector<ZoneEvent*>() );
+        zone->child = m_data.zoneChildren.size();
+        m_data.zoneChildren.push_back( Vector<ZoneEvent*>() );
         Vector<ZoneEvent*> tmp;
         ReadTimelinePre042( f, tmp, thread, sz, fileVer );
-        m_data.m_zoneChildren[zone->child] = std::move( tmp );
+        m_data.zoneChildren[zone->child] = std::move( tmp );
     }
 }
 
@@ -3581,11 +3624,11 @@ void Worker::ReadTimeline( FileRead& f, GpuEvent* zone, int64_t& refTime, int64_
     }
     else
     {
-        zone->child = m_data.m_gpuChildren.size();
-        m_data.m_gpuChildren.push_back( Vector<GpuEvent*>() );
+        zone->child = m_data.gpuChildren.size();
+        m_data.gpuChildren.push_back( Vector<GpuEvent*>() );
         Vector<GpuEvent*> tmp;
         ReadTimeline( f, tmp, sz, refTime, refGpuTime );
-        m_data.m_gpuChildren[zone->child] = std::move( tmp );
+        m_data.gpuChildren[zone->child] = std::move( tmp );
     }
 }
 
@@ -3599,11 +3642,11 @@ void Worker::ReadTimelinePre044( FileRead& f, GpuEvent* zone, int64_t& refTime, 
     }
     else
     {
-        zone->child = m_data.m_gpuChildren.size();
-        m_data.m_gpuChildren.push_back( Vector<GpuEvent*>() );
+        zone->child = m_data.gpuChildren.size();
+        m_data.gpuChildren.push_back( Vector<GpuEvent*>() );
         Vector<GpuEvent*> tmp;
         ReadTimelinePre044( f, tmp, sz, refTime, refGpuTime, fileVer );
-        m_data.m_gpuChildren[zone->child] = std::move( tmp );
+        m_data.gpuChildren[zone->child] = std::move( tmp );
     }
 }
 
@@ -3826,7 +3869,7 @@ void Worker::Write( FileWrite& f )
     f.Write( &sz, sizeof( sz ) );
     f.Write( m_hostInfo.c_str(), sz );
 
-    f.Write( &m_data.m_crashEvent, sizeof( m_data.m_crashEvent ) );
+    f.Write( &m_data.crashEvent, sizeof( m_data.crashEvent ) );
 
     sz = m_data.frames.Data().size();
     f.Write( &sz, sizeof( sz ) );
@@ -3972,6 +4015,9 @@ void Worker::Write( FileWrite& f )
         }
     }
 
+    sz = 0;
+    for( auto& v : m_data.threads ) sz += v->count;
+    f.Write( &sz, sizeof( sz ) );
     sz = m_data.threads.size();
     f.Write( &sz, sizeof( sz ) );
     for( auto& thread : m_data.threads )
@@ -3989,6 +4035,9 @@ void Worker::Write( FileWrite& f )
         }
     }
 
+    sz = 0;
+    for( auto& v : m_data.gpuData ) sz += v->count;
+    f.Write( &sz, sizeof( sz ) );
     sz = m_data.gpuData.size();
     f.Write( &sz, sizeof( sz ) );
     for( auto& ctx : m_data.gpuData )

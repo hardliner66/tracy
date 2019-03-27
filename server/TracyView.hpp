@@ -51,6 +51,12 @@ public:
         int height = 0;
     };
 
+    struct PlotView
+    {
+        double min;
+        double max;
+    };
+
     using SetTitleCallback = void(*)( const char* );
 
     View( ImFont* fixedWidth = nullptr, SetTitleCallback stcb = nullptr ) : View( "127.0.0.1", fixedWidth, stcb ) {}
@@ -99,12 +105,12 @@ private:
     bool DrawZoneFramesHeader();
     bool DrawZoneFrames( const FrameData& frames );
     void DrawZones();
-    int DispatchZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
-    int DrawZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
-    int SkipZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
-    int DispatchGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
-    int DrawGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
-    int SkipGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
+    int DispatchZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
+    int DrawZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
+    int SkipZoneLevel( const Vector<ZoneEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, float yMin, float yMax );
+    int DispatchGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
+    int DrawGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
+    int SkipGpuZoneLevel( const Vector<GpuEvent*>& vec, bool hover, double pxns, int64_t nspx, const ImVec2& wpos, int offset, int depth, uint64_t thread, float yMin, float yMax, int64_t begin, int drift );
     void DrawLockHeader( uint32_t id, const LockMap& lockmap, const SourceLocation& srcloc, bool hover, ImDrawList* draw, const ImVec2& wpos, float w, float ty, float offset, uint8_t tid );
     int DrawLocks( uint64_t tid, bool hover, double pxns, const ImVec2& wpos, int offset, LockHighlight& highlight, float yMin, float yMax );
     int DrawPlots( int offset, double pxns, const ImVec2& wpos, bool hover, float yMin, float yMax );
@@ -125,7 +131,7 @@ private:
     void DrawLockInfoWindow();
 
     template<class T>
-    void ListMemData( T ptr, T end, std::function<void(T&)> DrawAddress, const char* id = nullptr );
+    void ListMemData( T ptr, T end, std::function<void(T&)> DrawAddress, const char* id = nullptr, int64_t startTime = -1 );
 
     flat_hash_map<uint32_t, PathData, nohash<uint32_t>> GetCallstackPaths( const MemData& mem ) const;
     std::vector<CallstackFrameTree> GetCallstackFrameTreeBottomUp( const MemData& mem ) const;
@@ -162,6 +168,7 @@ private:
 
     const ZoneEvent* GetZoneParent( const ZoneEvent& zone ) const;
     const GpuEvent* GetZoneParent( const GpuEvent& zone ) const;
+    const ThreadData* GetZoneThreadData( const ZoneEvent& zone ) const;
     uint64_t GetZoneThread( const ZoneEvent& zone ) const;
     uint64_t GetZoneThread( const GpuEvent& zone ) const;
     const GpuCtxData* GetZoneCtx( const GpuEvent& zone ) const;
@@ -185,10 +192,17 @@ private:
     flat_hash_map<const void*, VisData, nohash<const void*>> m_visData;
     flat_hash_map<uint64_t, bool, nohash<uint64_t>> m_visibleMsgThread;
     flat_hash_map<const void*, int, nohash<const void*>> m_gpuDrift;
+    flat_hash_map<const PlotData*, PlotView, nohash<const PlotData*>> m_plotView;
+    Vector<const ThreadData*> m_threadOrder;
 
     tracy_force_inline VisData& Vis( const void* ptr )
     {
-        return m_visData[ptr];
+        auto it = m_visData.find( ptr );
+        if( it == m_visData.end() )
+        {
+            it = m_visData.emplace( ptr, VisData {} ).first;
+        }
+        return it->second;
     }
 
     tracy_force_inline bool& VisibleMsgThread( uint64_t thread )
@@ -267,6 +281,7 @@ private:
     bool m_showCallstackFrameAddress = false;
     bool m_showUnknownFrames = true;
     bool m_groupChildrenLocations = false;
+    bool m_allocTimeRelativeToZone = true;
 
     ShortcutAction m_shortcut = ShortcutAction::None;
     Namespace m_namespace = Namespace::Full;

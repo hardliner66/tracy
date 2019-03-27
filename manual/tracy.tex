@@ -750,6 +750,53 @@ To collect Lua call stacks (see section~\ref{collectingcallstacks}), replace \te
 
 Be aware that for Lua call stack retrieval to work, you need to be on a platform which supports collection of native call stacks.
 
+Cost of performing Lua call stack capture is presented in table~\ref{CallstackTimesLua} and figure~\ref{CallstackPlotLua}. Lua call stacks include native call stacks, which have a capture cost of their own (table~\ref{CallstackTimes}) and the \texttt{depth} parameter is applied for both captures. The presented data was captured with full Lua stack depth, but only 13 frames were available on the native call stack. Hence, to explain the non-linearity of the graph you need to consider what was really measured:
+
+\begin{displaymath}
+\text{Cost}_{\text{total}}(\text{depth}) =
+\begin{cases}
+\text{Cost}_{\text{Lua}}(\text{depth}) + \text{Cost}_{\text{native}}(\text{depth}) & \text{when depth} \leq 13 \\
+\text{Cost}_{\text{Lua}}(\text{depth}) + \text{Cost}_{\text{native}}(13) & \text{when depth} > 13
+\end{cases}
+\end{displaymath}
+
+\begin{table}[h]
+\centering
+\begin{tabular}[h]{c|c}
+\textbf{Depth} & \textbf{Time} \\ \hline
+1 & 707 \si{\nano\second} \\
+2 & 699 \si{\nano\second} \\
+3 & 624 \si{\nano\second} \\
+4 & 727 \si{\nano\second} \\
+5 & 836 \si{\nano\second} \\
+10 & 1.77 \si{\micro\second} \\
+15 & 2.44 \si{\micro\second} \\
+20 & 2.51 \si{\micro\second} \\
+25 & 2.98 \si{\micro\second} \\
+30 & 3.6 \si{\micro\second} \\
+35 & 4.33 \si{\micro\second} \\
+40 & 5.17 \si{\micro\second} \\
+45 & 6.01 \si{\micro\second} \\
+50 & 6.99 \si{\micro\second} \\
+55 & 8.11 \si{\micro\second} \\
+60 & 9.17 \si{\micro\second}
+\end{tabular}
+\caption{Median times of Lua zone capture with call stack (x64, 13 native frames)}
+\label{CallstackTimesLua}
+\end{table}
+
+\begin{figure}[h]
+\centering\begin{tikzpicture}
+\begin{axis}[xlabel=Call stack depth,ylabel=Time (\si{\micro\second}), legend pos=north west]
+\addplot[smooth, mark=o, red] plot coordinates {
+(1, 0.707) (2, 0.699) (3, 0.624) (4, 0.727) (5, 0.836) (10, 1.770) (15, 2.440) (20, 2.510) (25, 2.980) (30, 3.600) (35, 4.330) (40, 5.170) (45, 6.010) (50, 6.990) (55, 8.110) (60, 9.170)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{Plot of call Lua stack capture times (see table~\ref{CallstackTimesLua})}
+\label{CallstackPlotLua}
+\end{figure}
+
 \subsubsection{Instrumentation cleanup}
 
 Even if Tracy is disabled, you still have to pay the no-op function call cost. To prevent that you may want to use the \texttt{tracy::LuaRemove(char* script)} function, which will replace instrumentation calls with white-space. This function does nothing if profiler is enabled.
@@ -906,7 +953,7 @@ The new file contains the same data as the old one, but in the updated internal 
 
 \subsubsection{Archival mode}
 
-The update utility supports optional higher level of data compression, enabled by passing the \texttt{-{}-hc} parameter. It can reduce the trace size by \numrange{15}{20}\%, at a considerable time cost ($\sim17\times$~increase of compression time).
+The update utility supports optional higher level of data compression, enabled by passing the \texttt{-{}-hc} parameter. It can reduce the trace size down to \numrange{70}{40}\% the original size, at a considerable time cost ($\sim17\times$~increase of compression time).
 
 Note that trace files (even the ones created in high compression mode) are optimized for fast decompression. You still will be able to squeeze the data using normal compression methods. For example, 7-zip can compress traces to about 25\% of their uncompressed\footnote{Compressed internally.} size.
 
@@ -1261,7 +1308,7 @@ In this window you can set various trace-related options. The timeline view migh
 \end{itemize}
 \item \emph{\faLock{} Draw locks} -- Controls the display of locks. If the \emph{Only contended} option is selected, the non-blocking regions of locks won't be displayed (see section~\ref{zoneslocksplots}). The \emph{Locks} drop-down allows disabling display of locks on a per-lock basis. As a convenience, the list of locks is split into the single-threaded and multi-threaded categories. Clicking the \RMB{}~right mouse button on a lock label opens the lock information window (section~\ref{lockwindow}).
 \item \emph{\faSignature{} Draw plots} -- Allows disabling display of plots. Individual plots can be disabled in the \emph{Plots} drop-down.
-\item \emph{\faRandom{} Visible threads} -- Here you can disable display of selected threads.
+\item \emph{\faRandom{} Visible threads} -- Here you can disable display of selected threads or change the order in which they are shown.
 \item \emph{\faImages{} Visible frame sets} -- Frame set display can be enabled or disabled here. Note that disabled frame sets are still available for selection in the frame set selection drop-down (section~\ref{controlmenu}), but are marked with a dimmed font.
 \end{itemize}
 
@@ -1513,6 +1560,7 @@ The zone information window displays detailed information about a single zone. T
 \item Basic source location information: function name, source file location and the thread name.
 \item Timing information.
 \item Memory events list, both summarized and a list of individual allocation/free events (see section~\ref{memorywindow} for more information on the memory events list).
+\item List of messages that were logged in the zone's scope (including its children).
 \item Zone trace, taking into account the zone tree and call stack information (section~\ref{collectingcallstacks}), trying to reconstruct a combined zone + call stack trace\footnote{Reconstruction is only possible, if all zones have full call stack capture data available. In case where that's not available, an \emph{unknown frames} entry will be present.}. Captured zones are displayed as normal text, while functions that were not instrumented are dimmed. Hovering the \faMousePointer{}~mouse pointer over a zone will highlight it on the timeline view with a red outline. Clicking the \LMB{}~left mouse button on a zone will switch the zone info window to that zone. Clicking the \MMB{}~middle mouse button on a zone will zoom the timeline view to the zone's extent. Clicking the \RMB{}~right mouse button on a source file location will open the source file view window (if applicable, see section~\ref{sourceview}).
 \item Child zones list, showing how the current zone's execution time was used. Zones on this list can be grouped according to their source location. Each group can be expanded to show individual entries. All the controls from the zone trace are also available here.
 \end{itemize}
