@@ -136,6 +136,7 @@ extern IMGUI_API ImGuiContext* GImGui;  // Current implicit ImGui context pointe
 #else
 #define IM_NEWLINE      "\n"
 #endif
+#define IM_TABSIZE      (4)
 
 #define IMGUI_DEBUG_LOG(_FMT,...)       printf("[%05d] " _FMT, GImGui->FrameCount, __VA_ARGS__)
 #define IM_STATIC_ASSERT(_COND)         typedef char static_assertion_##__line__[(_COND)?1:-1]
@@ -351,7 +352,8 @@ enum ImGuiSelectableFlagsPrivate_
     ImGuiSelectableFlags_NoHoldingActiveID  = 1 << 10,
     ImGuiSelectableFlags_PressedOnClick     = 1 << 11,
     ImGuiSelectableFlags_PressedOnRelease   = 1 << 12,
-    ImGuiSelectableFlags_DrawFillAvailWidth = 1 << 13
+    ImGuiSelectableFlags_DrawFillAvailWidth = 1 << 13,
+    ImGuiSelectableFlags_AllowItemOverlap   = 1 << 14
 };
 
 enum ImGuiSeparatorFlags_
@@ -951,7 +953,6 @@ struct ImGuiContext
     ImVector<ImGuiWindow*>  CurrentWindowStack;
     ImGuiStorage            WindowsById;
     int                     WindowsActiveCount;
-    int                     WindowsFrontMostStampCount;         // Every time the front-most window changes, we stamp its viewport with an incrementing counter
     ImGuiWindow*            CurrentWindow;                      // Being drawn into
     ImGuiWindow*            HoveredWindow;                      // Will catch mouse inputs
     ImGuiWindow*            HoveredRootWindow;                  // Will catch mouse inputs (for focus/move only)
@@ -996,6 +997,7 @@ struct ImGuiContext
     ImGuiViewportP*         MouseViewport;
     ImGuiViewportP*         MouseLastHoveredViewport;           // Last known viewport that was hovered by mouse (even if we are not hovering any viewport any more) + honoring the _NoInputs flag.
     ImGuiID                 PlatformLastFocusedViewport;        // Record of last focused platform window/viewport, when this changes we stamp the viewport as front-most
+    int                     ViewportFrontMostStampCount;        // Every time the front-most window changes, we stamp its viewport with an incrementing counter
 
     // Navigation data (for gamepad/keyboard)
     ImGuiWindow*            NavWindow;                          // Focused window for navigation. Could be called 'FocusWindow'
@@ -1141,7 +1143,6 @@ struct ImGuiContext
         FrameCount = 0;
         FrameCountEnded = FrameCountPlatformEnded = FrameCountRendered = -1;
         WindowsActiveCount = 0;
-        WindowsFrontMostStampCount = 0;
         CurrentWindow = NULL;
         HoveredWindow = NULL;
         HoveredRootWindow = NULL;
@@ -1175,6 +1176,7 @@ struct ImGuiContext
         CurrentViewport = NULL;
         MouseViewport = MouseLastHoveredViewport = NULL;
         PlatformLastFocusedViewport = 0;
+        ViewportFrontMostStampCount = 0;
 
         NavWindow = NULL;
         NavId = NavActivateId = NavActivateDownId = NavActivatePressedId = NavInputId = 0;
@@ -1377,7 +1379,7 @@ struct IMGUI_API ImGuiWindow
     bool                    WantCollapseToggle;
     bool                    SkipItems;                          // Set when items can safely be all clipped (e.g. window not visible or collapsed)
     bool                    Appearing;                          // Set during the frame where the window is appearing (or re-appearing)
-    bool                    Hidden;                             // Do not display (== (HiddenFramesForResize > 0) ||
+    bool                    Hidden;                             // Do not display (== (HiddenFrames*** > 0))
     bool                    HasCloseButton;                     // Set when the window has a close button (p_open != NULL)
     signed char             ResizeBorderHeld;                   // Current border being held for resize (-1: none, otherwise 0-3)
     short                   BeginCount;                         // Number of Begin() during the current frame (generally 0 or 1, 1+ if appending via multiple Begin/End pairs)
@@ -1388,8 +1390,8 @@ struct IMGUI_API ImGuiWindow
     bool                    AutoFitOnlyGrows;
     int                     AutoFitChildAxises;
     ImGuiDir                AutoPosLastDirection;
-    int                     HiddenFramesRegular;                // Hide the window for N frames
-    int                     HiddenFramesForResize;              // Hide the window for N frames while allowing items to be submitted so we can measure their size
+    int                     HiddenFramesCanSkipItems;           // Hide the window for N frames
+    int                     HiddenFramesCannotSkipItems;        // Hide the window for N frames while allowing items to be submitted so we can measure their size
     ImGuiCond               SetWindowPosAllowFlags;             // store acceptable condition flags for SetNextWindowPos() use.
     ImGuiCond               SetWindowSizeAllowFlags;            // store acceptable condition flags for SetNextWindowSize() use.
     ImGuiCond               SetWindowCollapsedAllowFlags;       // store acceptable condition flags for SetNextWindowCollapsed() use.
@@ -1405,6 +1407,7 @@ struct IMGUI_API ImGuiWindow
     ImVec2ih                HitTestHoleSize, HitTestHoleOffset;
     ImRect                  ContentsRegionRect;                 // FIXME: This is currently confusing/misleading. Maximum visible content position ~~ Pos + (SizeContentsExplicit ? SizeContentsExplicit : Size - ScrollbarSizes) - CursorStartPos, per axis
     int                     LastFrameActive;                    // Last frame number the window was Active.
+    int                     LastFrameJustFocused;               // Last frame number the window was made Focused.
     float                   ItemWidthDefault;
     ImGuiMenuColumns        MenuColumns;                        // Simplified columns storage for menu items
     ImGuiStorage            StateStorage;
@@ -1706,6 +1709,7 @@ namespace ImGui
     // Tab Bars
     IMGUI_API bool          BeginTabBarEx(ImGuiTabBar* tab_bar, const ImRect& bb, ImGuiTabBarFlags flags, ImGuiDockNode* dock_node);
     IMGUI_API ImGuiTabItem* TabBarFindTabByID(ImGuiTabBar* tab_bar, ImGuiID tab_id);
+    IMGUI_API ImGuiTabItem* TabBarFindMostRecentlySelectedTabForActiveWindow(ImGuiTabBar* tab_bar);
     IMGUI_API void          TabBarAddTab(ImGuiTabBar* tab_bar, ImGuiTabItemFlags tab_flags, ImGuiWindow* window);
     IMGUI_API void          TabBarRemoveTab(ImGuiTabBar* tab_bar, ImGuiID tab_id);
     IMGUI_API void          TabBarCloseTab(ImGuiTabBar* tab_bar, ImGuiTabItem* tab);
