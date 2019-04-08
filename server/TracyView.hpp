@@ -134,9 +134,9 @@ private:
     void ListMemData( T ptr, T end, std::function<void(T&)> DrawAddress, const char* id = nullptr, int64_t startTime = -1 );
 
     flat_hash_map<uint32_t, PathData, nohash<uint32_t>> GetCallstackPaths( const MemData& mem ) const;
-    std::vector<CallstackFrameTree> GetCallstackFrameTreeBottomUp( const MemData& mem ) const;
-    std::vector<CallstackFrameTree> GetCallstackFrameTreeTopDown( const MemData& mem ) const;
-    void DrawFrameTreeLevel( std::vector<CallstackFrameTree>& tree, int& idx );
+    flat_hash_map<uint64_t, CallstackFrameTree, nohash<uint64_t>> GetCallstackFrameTreeBottomUp( const MemData& mem ) const;
+    flat_hash_map<uint64_t, CallstackFrameTree, nohash<uint64_t>> GetCallstackFrameTreeTopDown( const MemData& mem ) const;
+    void DrawFrameTreeLevel( const flat_hash_map<uint64_t, CallstackFrameTree, nohash<uint64_t>>& tree, int& idx );
     void DrawZoneList( const Vector<ZoneEvent*>& zones );
 
     void DrawInfoWindow();
@@ -188,6 +188,8 @@ private:
     int64_t GetZoneChildTime( const ZoneEvent& zone );
     int64_t GetZoneChildTime( const GpuEvent& zone );
     int64_t GetZoneChildTimeFast( const ZoneEvent& zone );
+    int64_t GetZoneSelfTime( const ZoneEvent& zone );
+    int64_t GetZoneSelfTime( const GpuEvent& zone );
 
     flat_hash_map<const void*, VisData, nohash<const void*>> m_visData;
     flat_hash_map<uint64_t, bool, nohash<uint64_t>> m_visibleMsgThread;
@@ -472,6 +474,13 @@ private:
         std::unique_ptr<int64_t[]> bins;
         bool drawAvgMed = true;
     } m_frameSortData;
+
+    struct {
+        std::pair<const ZoneEvent*, int64_t> zoneSelfTime = { nullptr, 0 };
+        std::pair<const ZoneEvent*, int64_t> zoneSelfTime2 = { nullptr, 0 };
+        std::pair<const GpuEvent*, int64_t> gpuSelfTime = { nullptr, 0 };
+        std::pair<const GpuEvent*, int64_t> gpuSelfTime2 = { nullptr, 0 };
+    } m_cache;
 };
 
 }

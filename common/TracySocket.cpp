@@ -103,7 +103,7 @@ bool Socket::Connect( const char* addr, const char* port )
         if( ( sock = socket( ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol ) ) == -1 ) continue;
 #if defined __APPLE__
         int val = 1;
-        setsockopt( m_sock, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof( val ) );
+        setsockopt( sock, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof( val ) );
 #endif
         if( connect( sock, ptr->ai_addr, ptr->ai_addrlen ) == -1 )
         {
@@ -147,6 +147,19 @@ int Socket::Send( const void* _buf, int len )
         buf += ret;
     }
     return int( buf - start );
+}
+
+int Socket::GetSendBufSize()
+{
+    int bufSize;
+#if defined _WIN32 || defined __CYGWIN__
+    int sz = sizeof( bufSize );
+    getsockopt( m_sock, SOL_SOCKET, SO_SNDBUF, (char*)&bufSize, &sz );
+#else
+    socklen_t sz = sizeof( bufSize );
+    getsockopt( m_sock, SOL_SOCKET, SO_SNDBUF, &bufSize, &sz );
+#endif
+    return bufSize;
 }
 
 int Socket::RecvBuffered( void* buf, int len, int timeout )
@@ -303,20 +316,16 @@ Socket* ListenSocket::Accept()
     if( poll( &fd, 1, 10 ) > 0 )
     {
         int sock = accept( m_sock, (sockaddr*)&remote, &sz);
+        if( sock == -1 ) return nullptr;
+
 #if defined __APPLE__
         int val = 1;
         setsockopt( sock, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof( val ) );
 #endif
-        if( sock == -1 )
-        {
-            return nullptr;
-        }
-        else
-        {
-            auto ptr = (Socket*)tracy_malloc( sizeof( Socket ) );
-            new(ptr) Socket( sock );
-            return ptr;
-        }
+
+        auto ptr = (Socket*)tracy_malloc( sizeof( Socket ) );
+        new(ptr) Socket( sock );
+        return ptr;
     }
     else
     {

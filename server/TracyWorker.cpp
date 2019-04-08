@@ -1728,6 +1728,7 @@ void Worker::Exec()
         }
     }
 
+    m_serverQuerySpaceLeft = m_sock.GetSendBufSize() / ServerQueryPacketSize;
     m_hasData.store( true, std::memory_order_release );
 
     LZ4_setStreamDecode( m_stream, nullptr, 0 );
@@ -1764,6 +1765,14 @@ void Worker::Exec()
             if( m_bufferOffset > TargetFrameSize * 2 ) m_bufferOffset = 0;
 
             HandlePostponedPlots();
+
+            while( !m_serverQueryQueue.empty() && m_serverQuerySpaceLeft > 0 )
+            {
+                m_serverQuerySpaceLeft--;
+                const auto& query = m_serverQueryQueue.back();
+                m_sock.Send( &query, ServerQueryPacketSize );
+                m_serverQueryQueue.pop_back();
+            }
         }
 
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -1775,6 +1784,7 @@ void Worker::Exec()
             m_mbpsData.mbps.erase( m_mbpsData.mbps.begin() );
             m_mbpsData.mbps.emplace_back( bytes / ( td * 125.f ) );
             m_mbpsData.compRatio = float( bytes ) / decBytes;
+            m_mbpsData.queue = m_serverQueryQueue.size();
             t0 = t1;
             bytes = 0;
             decBytes = 0;
@@ -1800,7 +1810,7 @@ void Worker::Exec()
                 }
                 if( !done ) continue;
             }
-            ServerQuery( ServerQueryTerminate, 0 );
+            Query( ServerQueryTerminate, 0 );
             break;
         }
     }
@@ -1810,13 +1820,18 @@ close:
     m_connected.store( false, std::memory_order_relaxed );
 }
 
-void Worker::ServerQuery( uint8_t type, uint64_t data )
+void Worker::Query( ServerQuery type, uint64_t data )
 {
-    enum { DataSize = sizeof( type ) + sizeof( data ) };
-    char tmp[DataSize];
-    memcpy( tmp, &type, sizeof( type ) );
-    memcpy( tmp + sizeof( type ), &data, sizeof( data ) );
-    m_sock.Send( tmp, DataSize );
+    ServerQueryPacket query = { type, data };
+    if( m_serverQuerySpaceLeft > 0 )
+    {
+        m_serverQuerySpaceLeft--;
+        m_sock.Send( &query, ServerQueryPacketSize );
+    }
+    else
+    {
+        m_serverQueryQueue.insert( m_serverQueryQueue.begin(), query );
+    }
 }
 
 bool Worker::DispatchProcess( const QueueItem& ev, char*& ptr )
@@ -1834,12 +1849,15 @@ bool Worker::DispatchProcess( const QueueItem& ev, char*& ptr )
             break;
         case QueueType::StringData:
             AddString( ev.stringTransfer.ptr, ptr, sz );
+            m_serverQuerySpaceLeft++;
             break;
         case QueueType::ThreadName:
             AddThreadString( ev.stringTransfer.ptr, ptr, sz );
+            m_serverQuerySpaceLeft++;
             break;
         case QueueType::PlotName:
             HandlePlotName( ev.stringTransfer.ptr, ptr, sz );
+            m_serverQuerySpaceLeft++;
             break;
         case QueueType::SourceLocationPayload:
             AddSourceLocationPayload( ev.stringTransfer.ptr, ptr, sz );
@@ -1849,6 +1867,7 @@ bool Worker::DispatchProcess( const QueueItem& ev, char*& ptr )
             break;
         case QueueType::FrameName:
             HandleFrameName( ev.stringTransfer.ptr, ptr, sz );
+            m_serverQuerySpaceLeft++;
             break;
         case QueueType::CallstackAllocPayload:
             AddCallstackAllocPayload( ev.stringTransfer.ptr, ptr, sz );
@@ -1883,7 +1902,7 @@ void Worker::NewSourceLocation( uint64_t ptr )
     m_pendingSourceLocation++;
     m_sourceLocationQueue.push_back( ptr );
 
-    ServerQuery( ServerQuerySourceLocation, ptr );
+    Query( ServerQuerySourceLocation, ptr );
 }
 
 uint32_t Worker::ShrinkSourceLocation( uint64_t srcloc )
@@ -2067,7 +2086,7 @@ void Worker::CheckString( uint64_t ptr )
     m_data.strings.emplace( ptr, "???" );
     m_pendingStrings++;
 
-    ServerQuery( ServerQueryString, ptr );
+    Query( ServerQueryString, ptr );
 }
 
 void Worker::CheckThreadString( uint64_t id )
@@ -2077,7 +2096,7 @@ void Worker::CheckThreadString( uint64_t id )
     m_data.threadNames.emplace( id, "???" );
     m_pendingThreads++;
 
-    ServerQuery( ServerQueryThreadString, id );
+    Query( ServerQueryThreadString, id );
 }
 
 void Worker::AddSourceLocation( const QueueSourceLocation& srcloc )
@@ -2211,7 +2230,7 @@ void Worker::AddCallstackPayload( uint64_t ptr, char* _data, size_t _sz )
             if( fit == m_data.callstackFrameMap.end() )
             {
                 m_pendingCallstackFrames++;
-                ServerQuery( ServerQueryCallstackFrame, GetCanonicalPointer( frame ) );
+                Query( ServerQueryCallstackFrame, GetCanonicalPointer( frame ) );
             }
         }
     }
@@ -2290,7 +2309,7 @@ void Worker::AddCallstackAllocPayload( uint64_t ptr, char* data, size_t _sz )
             if( fit == m_data.callstackFrameMap.end() )
             {
                 m_pendingCallstackFrames++;
-                ServerQuery( ServerQueryCallstackFrame, GetCanonicalPointer( frame ) );
+                Query( ServerQueryCallstackFrame, GetCanonicalPointer( frame ) );
             }
         }
     }
@@ -2437,6 +2456,7 @@ bool Worker::Process( const QueueItem& ev )
         break;
     case QueueType::SourceLocation:
         AddSourceLocation( ev.srcloc );
+        m_serverQuerySpaceLeft++;
         break;
     case QueueType::ZoneText:
         ProcessZoneText( ev.zoneText );
@@ -2518,6 +2538,7 @@ bool Worker::Process( const QueueItem& ev )
         break;
     case QueueType::CallstackFrameSize:
         ProcessCallstackFrameSize( ev.callstackFrameSize );
+        m_serverQuerySpaceLeft++;
         break;
     case QueueType::CallstackFrame:
         ProcessCallstackFrame( ev.callstackFrame );
@@ -2738,7 +2759,7 @@ void Worker::ProcessFrameMark( const QueueFrameMark& ev )
         fd->continuous = 1;
         return fd;
     }, [this] ( uint64_t name ) {
-        ServerQuery( ServerQueryFrameName, name );
+        Query( ServerQueryFrameName, name );
     } );
 
     assert( fd->continuous == 1 );
@@ -2756,7 +2777,7 @@ void Worker::ProcessFrameMarkStart( const QueueFrameMark& ev )
         fd->continuous = 0;
         return fd;
     }, [this] ( uint64_t name ) {
-        ServerQuery( ServerQueryFrameName, name );
+        Query( ServerQueryFrameName, name );
     } );
 
     assert( fd->continuous == 0 );
@@ -2774,7 +2795,7 @@ void Worker::ProcessFrameMarkEnd( const QueueFrameMark& ev )
         fd->continuous = 0;
         return fd;
     }, [this] ( uint64_t name ) {
-        ServerQuery( ServerQueryFrameName, name );
+        Query( ServerQueryFrameName, name );
     } );
 
     assert( fd->continuous == 0 );
@@ -3006,7 +3027,7 @@ void Worker::ProcessPlotData( const QueuePlotData& ev )
         plot->type = PlotType::User;
         return plot;
     }, [this]( uint64_t name ) {
-        ServerQuery( ServerQueryPlotName, name );
+        Query( ServerQueryPlotName, name );
     } );
 
     const auto time = TscTime( ev.time );
