@@ -147,9 +147,15 @@ int main( int argc, char** argv )
         printf( "\n\033[31;1mInstrumentation failure: %s\033[0m", tracy::Worker::GetFailureString( failure ) );
     }
 
+#ifdef _WIN64
     printf( "\nFrames: %" PRIu64 "\nTime span: %s\nZones: %s\nElapsed time: %s\nSaving trace...",
         worker.GetFrameCount( *worker.GetFramesBase() ), tracy::TimeToString( worker.GetLastTime() ), tracy::RealToString( worker.GetZoneCount() ),
         tracy::TimeToString( std::chrono::duration_cast<std::chrono::nanoseconds>( t1 - t0 ).count() ) );
+#else
+    printf("\nFrames: %" PRIu32 "\nTime span: %s\nZones: %s\nElapsed time: %s\nSaving trace...",
+        worker.GetFrameCount(*worker.GetFramesBase()), tracy::TimeToString(worker.GetLastTime()), tracy::RealToString(worker.GetZoneCount()),
+        tracy::TimeToString(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+#endif
     fflush( stdout );
     auto f = std::unique_ptr<tracy::FileWrite>( tracy::FileWrite::Open( output ) );
     if( f )
